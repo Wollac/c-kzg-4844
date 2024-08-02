@@ -14,7 +14,7 @@ build = "bindings/rust/build.rs"
 path = "bindings/rust/src/lib.rs"
 
 [features]
-default = ["std", "portable", "alloc-builtin"]
+default = ["std", "portable"]
 std = ["hex/std", "libc/std", "serde?/std"]
 serde = ["dep:serde"]
 generate-bindings = ["dep:bindgen"]
@@ -27,9 +27,6 @@ portable = ["blst/portable"]
 # Suppress multi-threading.
 # Engaged on wasm32 target architecture automatically.
 no-threads = ["blst/no-threads"]
-
-# Use provided malloc/calloc/free definitions
-alloc-builtin = []
 
 [dependencies]
 blst = { version = "0.3.11", default-features = false, features = [ "no-threads" ] }

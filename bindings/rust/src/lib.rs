@@ -23,7 +23,7 @@ pub use bindings::{
 // Expose the remaining relevant types.
 pub use bindings::{Blob, Bytes32, Bytes48, Error};
 
-#[cfg(feature = "alloc-builtin")]
+#[cfg(target_os = "zkvm")]
 pub mod alloc_builtin {
     extern crate alloc;
 
