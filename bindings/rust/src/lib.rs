@@ -10,6 +10,7 @@ extern crate blst;
 
 mod bindings;
 
+use std::mem::size_of;
 // Expose relevant types with idiomatic names.
 pub use bindings::{
     KZGCommitment as KzgCommitment, KZGProof as KzgProof, KZGSettings as KzgSettings,
@@ -22,3 +23,66 @@ pub use bindings::{
 };
 // Expose the remaining relevant types.
 pub use bindings::{Blob, Bytes32, Bytes48, Error};
+
+#[cfg(feature = "alloc-builtin")]
+pub mod alloc_builtin {
+
+    const LEN_SIZE: usize = size_of::<usize>();
+
+    unsafe fn store_len(block_ptr: *mut u8, size: usize) -> *mut u8 {
+        let len_ptr = block_ptr as *mut usize;
+        *len_ptr = size;
+
+        block_ptr.offset(LEN_SIZE as isize)
+    }
+
+    unsafe fn get_len(block_ptr: *mut u8) -> (usize, *mut u8) {
+        let len_ptr = block_ptr.offset(-(LEN_SIZE as isize)) as *mut usize;
+        (*len_ptr, len_ptr as *mut u8)
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn malloc(size: usize) -> *mut std::ffi::c_void {
+        let layout = std::alloc::Layout::from_size_align(size + LEN_SIZE, 4)
+            .expect("unable to construct memory layout");
+        let block_ptr = std::alloc::alloc(layout);
+        env::log(&format!("malloc {}@{:?}", size, block_ptr));
+
+        if block_ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+
+        let data_ptr = store_len(block_ptr, size);
+
+        data_ptr as *mut std::ffi::c_void
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn calloc(nobj: usize, size: usize) -> *mut std::ffi::c_void {
+        let size = nobj * size;
+        let layout = std::alloc::Layout::from_size_align(size + LEN_SIZE, 4)
+            .expect("unable to construct memory layout");
+        let block_ptr = std::alloc::alloc_zeroed(layout);
+
+        env::log(&format!("calloc {}@{:?}", size, block_ptr));
+
+        if block_ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+
+        let data_ptr = store_len(block_ptr, size);
+
+        data_ptr as *mut std::ffi::c_void
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn free(block_ptr: *const std::ffi::c_void) {
+        let (size, free_ptr) = get_len(block_ptr as *mut u8);
+        env::log(&format!("free {}@{:?}", size, free_ptr));
+
+        let layout = std::alloc::Layout::from_size_align(size, 4)
+            .expect("unable to construct memory layout");
+
+        std::alloc::dealloc(free_ptr, layout);
+    }
+}
