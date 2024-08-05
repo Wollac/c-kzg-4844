@@ -181,6 +181,7 @@ impl KZGSettings {
     /// FIELD_ELEMENT_PER_BLOB g1 byte values
     /// 65 g2 byte values
     #[cfg(feature = "std")]
+    #[cfg(not(target_os = "zkvm"))]
     pub fn load_trusted_setup_file(file_path: &Path) -> Result<Self, Error> {
         #[cfg(unix)]
         let file_path_bytes = {
