@@ -20,7 +20,6 @@ use syn::{parse, parse2};
 
 #[proc_macro_attribute]
 pub fn risc0_c_kzg_alloc_mod(_attr: TokenStream, input: TokenStream) -> TokenStream {
-    // let input: syn::Item = parse(input).unwrap();
     let mut module_def: syn::ItemMod = parse(input).expect("Failed to parse input as a module");
     let builtin_module_tokens = quote! {
         mod __risc0_c_kzg_alloc_mod {
