@@ -22,3 +22,5 @@ pub use bindings::{
 };
 // Expose the remaining relevant types.
 pub use bindings::{Blob, Bytes32, Bytes48, Error};
+// Expose the attribute macro to generate malloc/calloc/free definitions
+pub use c_kzg_risc0_alloc::risc0_c_kzg_alloc_mod;
