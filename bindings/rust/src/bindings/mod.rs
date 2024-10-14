@@ -9,6 +9,7 @@ include!("./generated.rs");
 
 use alloc::string::String;
 use alloc::vec::Vec;
+#[cfg(not(target_os = "zkvm"))]
 use core::ffi::CStr;
 use core::fmt;
 use core::mem::MaybeUninit;
@@ -164,6 +165,7 @@ impl KZGSettings {
     /// FIELD_ELEMENT_PER_BLOB g1 byte values
     /// 65 g2 byte values
     #[cfg(feature = "std")]
+    #[cfg(not(target_os = "zkvm"))]
     pub fn load_trusted_setup_file(file_path: &Path) -> Result<Self, Error> {
         #[cfg(unix)]
         let file_path_bytes = {
@@ -236,6 +238,7 @@ impl KZGSettings {
     /// FIELD_ELEMENT_PER_BLOB g1 byte values
     /// 65 g2 byte values
     #[cfg(not(feature = "std"))]
+    #[cfg(not(target_os = "zkvm"))]
     pub fn load_trusted_setup_file(file_path: &CStr) -> Result<Self, Error> {
         Self::load_trusted_setup_file_inner(file_path)
     }
@@ -245,6 +248,7 @@ impl KZGSettings {
     /// Same as [`load_trusted_setup_file`](Self::load_trusted_setup_file)
     #[cfg_attr(not(feature = "std"), doc = ", but takes a `CStr` instead of a `Path`")]
     /// .
+    #[cfg(not(target_os = "zkvm"))]
     pub fn load_trusted_setup_file_inner(file_path: &CStr) -> Result<Self, Error> {
         // SAFETY: `b"r\0"` is a valid null-terminated string.
         const MODE: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"r\0") };
