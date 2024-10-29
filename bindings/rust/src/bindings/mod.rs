@@ -120,11 +120,11 @@ pub fn hex_to_bytes(hex_str: &str) -> Result<Vec<u8>, Error> {
 /// Holds the parameters of a kzg trusted setup ceremony.
 impl KZGSettings {
     pub fn from_u8_slice(data: &mut [u8]) -> Self {
-        let size_max_length = size_of::<u64>();
+        let size_max_length = core::mem::size_of::<u64>();
         let max_width: u64 = u64::from_be_bytes(data[0..size_max_length].try_into().unwrap());
 
-        let size_roots_of_unity = size_of::<fr_t>() * max_width as usize;
-        let size_g1_values = size_of::<g1_t>() * FIELD_ELEMENTS_PER_BLOB;
+        let size_roots_of_unity = core::mem::size_of::<fr_t>() * max_width as usize;
+        let size_g1_values = core::mem::size_of::<g1_t>() * FIELD_ELEMENTS_PER_BLOB;
 
         Self {
             max_width,
