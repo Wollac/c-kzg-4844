@@ -1,5 +1,4 @@
 use crate::{
-    bindings::{BYTES_PER_G1_POINT, BYTES_PER_G2_POINT, NUM_G1_POINTS, NUM_G2_POINTS},
     KzgSettings,
 };
 use alloc::{boxed::Box, sync::Arc};
@@ -20,31 +19,13 @@ pub fn ethereum_kzg_settings_arc() -> Arc<KzgSettings> {
 }
 
 fn ethereum_kzg_settings_inner() -> &'static Arc<KzgSettings> {
-    static DEFAULT: OnceBox<Arc<KzgSettings>> = OnceBox::new();
-    DEFAULT.get_or_init(|| {
-        let settings =
-            KzgSettings::load_trusted_setup(ETH_G1_POINTS.as_ref(), ETH_G2_POINTS.as_ref())
-                .expect("failed to load default trusted setup");
-        Box::new(Arc::new(settings))
-    })
+    static DEFAULT: OnceBox<([u8; 739624], Arc<KzgSettings>)> = OnceBox::new();
+    &DEFAULT.get_or_init(|| {
+        let mut data = *include_bytes!("./kzg_settings_raw.bin");
+        let settings = KzgSettings::from_u8_slice(data.as_mut_slice());
+        Box::new((data, Arc::new(settings)))
+    }).1
 }
-
-type G1Points = [[u8; BYTES_PER_G1_POINT]; NUM_G1_POINTS];
-type G2Points = [[u8; BYTES_PER_G2_POINT]; NUM_G2_POINTS];
-
-/// Default G1 points.
-const ETH_G1_POINTS: &G1Points = {
-    const BYTES: &[u8] = include_bytes!("./g1_points.bin");
-    assert!(BYTES.len() == core::mem::size_of::<G1Points>());
-    unsafe { &*BYTES.as_ptr().cast::<G1Points>() }
-};
-
-/// Default G2 points.
-const ETH_G2_POINTS: &G2Points = {
-    const BYTES: &[u8] = include_bytes!("./g2_points.bin");
-    assert!(BYTES.len() == core::mem::size_of::<G2Points>());
-    unsafe { &*BYTES.as_ptr().cast::<G2Points>() }
-};
 
 #[cfg(test)]
 mod tests {

@@ -15,9 +15,9 @@ use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use alloc::ffi::CString;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use std::path::Path;
 
 pub const BYTES_PER_G1_POINT: usize = 48;
