@@ -33,7 +33,7 @@ fn load_kzg_settings_impl() -> Arc<KzgSettings> {
     Arc::new(
         // SAFETY: The binary data is assumed to be in the correct format.
         unsafe {
-            KzgSettings::deserialize(&RAW_KZG_SETTINGS.0)
+            KzgSettings::deserialize(core::pin::Pin::static_ref(&RAW_KZG_SETTINGS.0))
                 .expect("failed to deserialize KzgSettings")
         },
     )
@@ -85,7 +85,7 @@ mod tests {
         let ts_commitment = KzgCommitment::blob_to_kzg_commitment(&blob, &ts_settings)
             .unwrap()
             .to_bytes();
-        let eth_commitment = KzgCommitment::blob_to_kzg_commitment(&blob, &eth_settings)
+        let eth_commitment = KzgCommitment::blob_to_kzg_commitment(&blob, eth_settings)
             .unwrap()
             .to_bytes();
         assert_eq!(ts_commitment, eth_commitment);
@@ -94,7 +94,7 @@ mod tests {
         let ts_proof = KzgProof::compute_blob_kzg_proof(&blob, &ts_commitment, &ts_settings)
             .unwrap()
             .to_bytes();
-        let eth_proof = KzgProof::compute_blob_kzg_proof(&blob, &eth_commitment, &eth_settings)
+        let eth_proof = KzgProof::compute_blob_kzg_proof(&blob, &eth_commitment, eth_settings)
             .unwrap()
             .to_bytes();
         assert_eq!(ts_proof, eth_proof);

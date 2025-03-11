@@ -27,6 +27,7 @@ use core::ffi::CStr;
 use core::fmt;
 use core::mem::{size_of, MaybeUninit};
 use core::ops::{Deref, DerefMut};
+use core::pin::Pin;
 
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use alloc::ffi::CString;
@@ -143,18 +144,19 @@ pub fn hex_to_bytes(hex_str: &str) -> Result<Vec<u8>, Error> {
 impl KZGSettings {
     /// Zero-copy deserialization from a byte slice. The buffer must be exactly the expected size.
     ///
-    /// The expected layout is:
-    /// - The first 8 bytes encode `max_width`;
-    /// - A sequence of `max_width` elements of type `fr_t` for `roots_of_unity`;
-    /// - A sequence of `NUM_G1_POINTS` elements of type `g1_t`;
-    /// - A sequence of `NUM_G2_POINTS` elements of type `g2_t`.
-    ///
     /// # Safety
     ///
-    /// The returned structure stores raw pointers into the input buffer.
-    /// The caller must ensure that the lifetime of `buf` exceeds the lifetime of the
-    /// returned `KZGSettings` and that the memory is correctly aligned.
-    pub(crate) unsafe fn deserialize(buf: &[u8]) -> Option<Self> {
+    /// This function is unsafe because it performs raw pointer casts into the underlying
+    /// buffer. The caller must ensure the provided `Pin<&'static [u8]>` points to memory
+    /// that is laid out exactly as expected by `KZGSettings` and that the memory remains
+    /// valid and pinned for the lifetime of the returned object.
+    ///
+    /// **Important Ownership Note:**
+    /// The returned `KZGSettings` instance stores internal pointers into the provided buffer.
+    /// Thus, its contents must not be freed. Since the current `Drop` implementation always calls
+    /// `free_trusted_setup`, callers **must** ensure that the destructor is not run by wrapping
+    /// the result in `ManuallyDrop` or otherwise handling the ownership semantics.
+    pub(crate) unsafe fn deserialize(buf: Pin<&'static [u8]>) -> Option<Self> {
         // Make sure the buffer is large enough for max_width.
         let size_u64 = size_of::<u64>();
         if buf.len() < size_u64 {
@@ -764,7 +766,7 @@ mod tests {
     use super::*;
     use crate::KzgSettings;
     use rand::{rngs::ThreadRng, Rng};
-    use std::{fs, mem, path::PathBuf};
+    use std::{fs, mem, mem::ManuallyDrop, path::PathBuf};
     use test_formats::{
         blob_to_kzg_commitment_test, compute_blob_kzg_proof, compute_kzg_proof,
         verify_blob_kzg_proof, verify_blob_kzg_proof_batch, verify_kzg_proof,
@@ -773,13 +775,20 @@ mod tests {
     #[test]
     fn test_round_trip() {
         let trusted_setup_file = Path::new("src/trusted_setup.txt");
-        let kzg_settings = KZGSettings::load_trusted_setup_file(trusted_setup_file).unwrap();
+        let original_settings = KZGSettings::load_trusted_setup_file(trusted_setup_file).unwrap();
 
         unsafe {
-            let bytes = kzg_settings.serialize();
-            let kzg_settings = KzgSettings::deserialize(&bytes).unwrap();
-            // must not be dropped
-            mem::forget(kzg_settings);
+            let bytes = original_settings.serialize();
+            // Leak and pin the serialized buffer to obtain a slice with static lifetime.
+            let bytes = Pin::static_ref(Box::leak(bytes.into_boxed_slice()));
+            let deserialized_settings = KzgSettings::deserialize(bytes).unwrap();
+            // Wrap in ManuallyDrop so that the destructor is not run.
+            let deserialized_settings = ManuallyDrop::new(deserialized_settings);
+
+            assert_eq!(
+                original_settings.max_width, deserialized_settings.max_width,
+                "Round trip failed: max_width does not match"
+            );
         }
     }
 
