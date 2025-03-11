@@ -1,30 +1,24 @@
-use crate::{
-    KzgSettings,
-};
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use once_cell::race::OnceBox;
+use crate::KzgSettings;
+use alloc::sync::Arc;
+use once_cell::sync::Lazy;
 
-/// Returns default Ethereum mainnet KZG settings.
+static RAW_KZG_SETTINGS: &[u8] = include_bytes!("./kzg_settings_raw.bin");
+
+static ETHEREUM_KZG_SETTINGS: Lazy<Arc<KzgSettings>> =
+    Lazy::new(|| Arc::new(KzgSettings::from_u8_slice(RAW_KZG_SETTINGS)));
+
+/// Returns the default Ethereum mainnet KZG settings.
 ///
 /// If you need a cloneable settings use `ethereum_kzg_settings_arc` instead.
 pub fn ethereum_kzg_settings() -> &'static KzgSettings {
-    ethereum_kzg_settings_inner().as_ref()
+    ETHEREUM_KZG_SETTINGS.as_ref()
 }
 
 /// Returns default Ethereum mainnet KZG settings as an `Arc`.
 ///
 /// It is useful for sharing the settings in multiple places.
 pub fn ethereum_kzg_settings_arc() -> Arc<KzgSettings> {
-    ethereum_kzg_settings_inner().clone()
-}
-
-fn ethereum_kzg_settings_inner() -> &'static Arc<KzgSettings> {
-    static DEFAULT: OnceBox<(Vec<u8>, Arc<KzgSettings>)> = OnceBox::new();
-    &DEFAULT.get_or_init(|| {
-        let mut data = Vec::from(include_bytes!("./kzg_settings_raw.bin"));
-        let settings = KzgSettings::from_u8_slice(data.as_mut_slice());
-        Box::new((data, Arc::new(settings)))
-    }).1
+    ETHEREUM_KZG_SETTINGS.clone()
 }
 
 #[cfg(test)]
