@@ -61,7 +61,8 @@ checksum = "630be753d4e58660abd17930c71b647fe46c27ea6b63cc59e1e3851406972e42"
 [[package]]
 name = "blst"
 version = "0.3.14"
-source = "git+https://github.com/risc0/blst?branch=iddo%2Faccel#5de3532d1cb9758c7c59b846b01fe35b4ccc1b28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47c79a94619fade3c0b887670333513a67ac28a6a7e653eb260bf0d4103db38d"
 dependencies = [
  "cc",
  "glob",

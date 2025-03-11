@@ -41,7 +41,7 @@ no-threads = ["blst/no-threads"]
 risc0-ffi = []
 
 [dependencies]
-blst = { git = "https://github.com/risc0/blst", branch = "iddo/accel", features = ["no-threads"] }
+blst = { version = "0.3.11", default-features = false, features = ["no-threads"] }
 bytemuck = "1.0"
 hex = { version = "0.4.2", default-features = false, features = ["alloc"] }
 serde = { version = "1.0", optional = true, default-features = false, features = [
