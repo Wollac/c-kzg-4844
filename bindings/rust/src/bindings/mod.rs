@@ -1,24 +1,46 @@
-#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals
+)]
 
 #[cfg(feature = "serde")]
 mod serde;
 #[cfg(test)]
 mod test_formats;
 
+#[cfg(target_os = "zkvm")]
+// Mock libc, so that the rust-bindgen code compiles without modifications.
+mod libc {
+    #[repr(C)]
+    pub struct FILE([u8; 0]);
+}
+
 include!("./generated.rs");
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use bytemuck::{cast_slice, try_cast_slice, Pod, Zeroable};
 #[cfg(not(target_os = "zkvm"))]
 use core::ffi::CStr;
 use core::fmt;
-use core::mem::MaybeUninit;
+use core::mem::{size_of, MaybeUninit};
 use core::ops::{Deref, DerefMut};
 
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use alloc::ffi::CString;
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use std::path::Path;
+use std::slice;
+
+// These types can be marked as Pod.
+unsafe impl Zeroable for blst_fr {}
+unsafe impl Pod for blst_fr {}
+unsafe impl Zeroable for blst_p1 {}
+unsafe impl Pod for blst_p1 {}
+unsafe impl Zeroable for blst_p2 {}
+unsafe impl Pod for blst_p2 {}
 
 pub const BYTES_PER_G1_POINT: usize = 48;
 pub const BYTES_PER_G2_POINT: usize = 96;
@@ -119,20 +141,77 @@ pub fn hex_to_bytes(hex_str: &str) -> Result<Vec<u8>, Error> {
 
 /// Holds the parameters of a kzg trusted setup ceremony.
 impl KZGSettings {
-    pub fn from_u8_slice(data: &[u8]) -> Self {
-        let size_max_length = core::mem::size_of::<u64>();
-        let max_width: u64 = u64::from_be_bytes(data[0..size_max_length].try_into().unwrap());
-
-        let size_roots_of_unity = core::mem::size_of::<fr_t>() * max_width as usize;
-        let size_g1_values = core::mem::size_of::<g1_t>() * FIELD_ELEMENTS_PER_BLOB;
-
-        Self {
-            max_width,
-            roots_of_unity: data[size_max_length..].as_ptr() as *mut fr_t,
-            g1_values: data[size_max_length + size_roots_of_unity..].as_ptr() as *mut blst_p1,
-            g2_values: data[size_max_length + size_roots_of_unity + size_g1_values..].as_ptr()
-                as *mut blst_p2,
+    /// Zero-copy deserialization from a byte slice. The buffer must be exactly the expected size.
+    ///
+    /// The expected layout is:
+    /// - The first 8 bytes encode `max_width`;
+    /// - A sequence of `max_width` elements of type `fr_t` for `roots_of_unity`;
+    /// - A sequence of `NUM_G1_POINTS` elements of type `g1_t`;
+    /// - A sequence of `NUM_G2_POINTS` elements of type `g2_t`.
+    ///
+    /// # Safety
+    ///
+    /// The returned structure stores raw pointers into the input buffer.
+    /// The caller must ensure that the lifetime of `buf` exceeds the lifetime of the
+    /// returned `KZGSettings` and that the memory is correctly aligned.
+    pub(crate) unsafe fn deserialize(buf: &[u8]) -> Option<Self> {
+        // Make sure the buffer is large enough for max_width.
+        let size_u64 = size_of::<u64>();
+        if buf.len() < size_u64 {
+            return None;
         }
+
+        let (max_width_bytes, rest) = buf.split_at(size_u64);
+        let max_width = u64::from_ne_bytes(max_width_bytes.try_into().unwrap());
+        let num_roots: usize = max_width.try_into().ok()?;
+
+        // Calculate bytes required per section.
+        let bytes_for_roots = num_roots.checked_mul(size_of::<fr_t>())?;
+        let bytes_for_g1 = NUM_G1_POINTS.checked_mul(size_of::<g1_t>())?;
+        let bytes_for_g2 = NUM_G2_POINTS.checked_mul(size_of::<g2_t>())?;
+        let total_size = size_u64
+            .checked_add(bytes_for_roots)?
+            .checked_add(bytes_for_g1)?
+            .checked_add(bytes_for_g2)?;
+        if buf.len() != total_size {
+            return None;
+        }
+
+        // Split the rest of the buffer accordingly
+        let (roots_bytes, rest) = rest.split_at(bytes_for_roots);
+        let roots_of_unity = try_cast_slice(roots_bytes).ok()?.as_ptr();
+        let (g1_bytes, g2_bytes) = rest.split_at(bytes_for_g1);
+        let g1_values = try_cast_slice(g1_bytes).ok()?.as_ptr();
+        let g2_values = try_cast_slice(g2_bytes).ok()?.as_ptr();
+
+        Some(Self {
+            max_width,
+            roots_of_unity,
+            g1_values,
+            g2_values,
+        })
+    }
+
+    /// Serializes the KZGSettings into a byte vector.
+    pub(crate) unsafe fn serialize(&self) -> Vec<u8> {
+        let num_roots = self.max_width as usize;
+        let total_size = size_of::<u64>()
+            + num_roots * size_of::<fr_t>()
+            + NUM_G1_POINTS * size_of::<g1_t>()
+            + NUM_G2_POINTS * size_of::<g2_t>();
+
+        let mut buf = Vec::with_capacity(total_size);
+
+        buf.extend_from_slice(&self.max_width.to_ne_bytes());
+
+        let roots_bytes = cast_slice(slice::from_raw_parts(self.roots_of_unity, num_roots));
+        buf.extend_from_slice(roots_bytes);
+        let g1_bytes = cast_slice(slice::from_raw_parts(self.g1_values, NUM_G1_POINTS));
+        buf.extend_from_slice(g1_bytes);
+        let g2_bytes = cast_slice(slice::from_raw_parts(self.g2_values, NUM_G2_POINTS));
+        buf.extend_from_slice(g2_bytes);
+
+        buf
     }
 
     /// Initializes a trusted setup from `FIELD_ELEMENTS_PER_BLOB` g1 points
@@ -683,12 +762,26 @@ unsafe impl Send for KZGSettings {}
 #[allow(unused_imports, dead_code)]
 mod tests {
     use super::*;
+    use crate::KzgSettings;
     use rand::{rngs::ThreadRng, Rng};
-    use std::{fs, path::PathBuf};
+    use std::{fs, mem, path::PathBuf};
     use test_formats::{
         blob_to_kzg_commitment_test, compute_blob_kzg_proof, compute_kzg_proof,
         verify_blob_kzg_proof, verify_blob_kzg_proof_batch, verify_kzg_proof,
     };
+
+    #[test]
+    fn test_round_trip() {
+        let trusted_setup_file = Path::new("src/trusted_setup.txt");
+        let kzg_settings = KZGSettings::load_trusted_setup_file(trusted_setup_file).unwrap();
+
+        unsafe {
+            let bytes = kzg_settings.serialize();
+            let kzg_settings = KzgSettings::deserialize(&bytes).unwrap();
+            // must not be dropped
+            mem::forget(kzg_settings);
+        }
+    }
 
     fn generate_random_blob(rng: &mut ThreadRng) -> Blob {
         let mut arr = [0u8; BYTES_PER_BLOB];
