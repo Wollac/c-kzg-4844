@@ -22,11 +22,9 @@ pub fn ethereum_kzg_settings_arc() -> Arc<KzgSettings> {
 /// On little endian targets, load the KzgSettings dump directly.
 #[cfg(target_endian = "little")]
 fn load_kzg_settings_impl() -> Arc<KzgSettings> {
-    // The alignment annotation ensures that the data is aligned to 64 bytes.
-    #[repr(align(64))]
+    // Ensure that the data is aligned to 8 bytes as it will be interpreted as arrays of u64.
+    #[repr(align(8))]
     struct AlignedKzgSettings([u8; 739624]);
-
-    // The file is embedded into a static instance.
     static RAW_KZG_SETTINGS: AlignedKzgSettings =
         AlignedKzgSettings(*include_bytes!("./kzg_settings_raw_le.bin"));
 
