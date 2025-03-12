@@ -44,6 +44,7 @@ risc0-ffi = []
 blst = { version = "0.3.11", default-features = false, features = ["no-threads"] }
 bytemuck = "1.0"
 hex = { version = "0.4.2", default-features = false, features = ["alloc"] }
+libc = { version = "0.2", default-features = false }
 serde = { version = "1.0", optional = true, default-features = false, features = [
     "alloc",
     "derive",
@@ -51,9 +52,6 @@ serde = { version = "1.0", optional = true, default-features = false, features =
 once_cell = { version = "1.19", default-features = false, features = [
     "alloc",
 ], optional = true }
-
-[target.'cfg(not(target_os = "zkvm"))'.dependencies]
-libc = { version = "0.2", default-features = false }
 
 [dev-dependencies]
 criterion = "0.5.1"
