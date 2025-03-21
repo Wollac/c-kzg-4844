@@ -1,69 +1,61 @@
+use crate::bindings::RawKzgSettings;
 use crate::KzgSettings;
 use alloc::sync::Arc;
 use once_cell::sync::Lazy;
 
 /// A lazily initialized global instance of Ethereum mainnet KZG settings.
-static ETHEREUM_KZG_SETTINGS: Lazy<Arc<KzgSettings>> = Lazy::new(load_kzg_settings_impl);
+static ETHEREUM_KZG_SETTINGS: Lazy<Arc<KzgSettings>> = Lazy::new(|| Arc::new(load_kzg_settings()));
 
-/// Returns the default Ethereum mainnet KZG settings as a reference.
+/// Returns default Ethereum mainnet KZG settings.
 ///
-/// If you need a cloneable settings instance, use [`ethereum_kzg_settings_arc`] instead.
+/// If you need a cloneable settings use `ethereum_kzg_settings_arc` instead.
+#[inline]
 pub fn ethereum_kzg_settings() -> &'static KzgSettings {
-    ETHEREUM_KZG_SETTINGS.as_ref()
+    &ETHEREUM_KZG_SETTINGS
 }
 
-/// Returns the default Ethereum mainnet KZG settings as an `Arc`.
+/// Returns default Ethereum mainnet KZG settings as an `Arc`.
 ///
-/// This is useful when sharing the settings in multiple places.
+/// It is useful for sharing the settings in multiple places.
+#[inline]
 pub fn ethereum_kzg_settings_arc() -> Arc<KzgSettings> {
     ETHEREUM_KZG_SETTINGS.clone()
 }
 
-/// On little endian targets, load the KzgSettings dump directly.
-#[cfg(target_endian = "little")]
-fn load_kzg_settings_impl() -> Arc<KzgSettings> {
-    // Ensure that the data is aligned to 8 bytes as it will be interpreted as arrays of u64.
-    #[repr(align(8))]
-    struct AlignedKzgSettings([u8; 739624]);
-    static RAW_KZG_SETTINGS: AlignedKzgSettings =
-        AlignedKzgSettings(*include_bytes!("./kzg_settings_raw_le.bin"));
+#[cfg(feature = "generate_ethereum_kzg_settings")]
+fn generate_kzg_settings() -> std::io::Result<&'static RawKzgSettings> {
+    use std::{fs::File, io::Write, path::PathBuf};
 
-    Arc::new(
-        // SAFETY: The binary data is assumed to be in the correct format.
-        unsafe {
-            KzgSettings::deserialize(core::pin::Pin::static_ref(&RAW_KZG_SETTINGS.0))
-                .expect("failed to deserialize KzgSettings")
-        },
-    )
+    let trusted_setup = include_str!("../../../../src/trusted_setup.txt");
+    let settings = KzgSettings::parse_kzg_trusted_setup(trusted_setup).unwrap();
+
+    let raw = settings.to_raw();
+
+    let mut root_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    root_dir.push("bindings/rust/src/ethereum_kzg_settings");
+
+    File::create(root_dir.join("roots_of_unity.bin"))?.write_all(&raw.roots_of_unity)?;
+    File::create(root_dir.join("g1_points.bin"))?.write_all(&raw.g1_points)?;
+    File::create(root_dir.join("g2_points.bin"))?.write_all(&raw.g2_points)?;
+
+    Ok(Box::leak(raw))
 }
 
-/// On other targets compute the KzgSettings from the curve points.
-#[cfg(not(target_endian = "little"))]
-fn load_kzg_settings_impl() -> Arc<KzgSettings> {
-    use crate::bindings::*;
+fn load_kzg_settings() -> KzgSettings {
+    #[cfg(feature = "generate_ethereum_kzg_settings")]
+    return KzgSettings::from_raw(generate_kzg_settings().expect("failed to write KZG settings"))
+        .unwrap();
 
-    // Type aliases for the expected structure layout of the binary files.
-    type G1Points = [[u8; BYTES_PER_G1_POINT]; NUM_G1_POINTS];
-    type G2Points = [[u8; BYTES_PER_G2_POINT]; NUM_G2_POINTS];
+    #[cfg(not(feature = "generate_ethereum_kzg_settings"))]
+    {
+        static RAW_KZG_SETTINGS: RawKzgSettings = RawKzgSettings {
+            roots_of_unity: *include_bytes!("roots_of_unity.bin"),
+            g1_points: *include_bytes!("g1_points.bin"),
+            g2_points: *include_bytes!("g2_points.bin"),
+        };
 
-    /// Default G1 points.
-    const ETH_G1_POINTS: &G1Points = {
-        const BYTES: &[u8] = include_bytes!("./g1_points.bin");
-        assert!(BYTES.len() == core::mem::size_of::<G1Points>());
-        unsafe { &*BYTES.as_ptr().cast::<G1Points>() }
-    };
-
-    /// Default G2 points.
-    const ETH_G2_POINTS: &G2Points = {
-        const BYTES: &[u8] = include_bytes!("./g2_points.bin");
-        assert!(BYTES.len() == core::mem::size_of::<G2Points>());
-        unsafe { &*BYTES.as_ptr().cast::<G2Points>() }
-    };
-
-    Arc::new(
-        KzgSettings::load_trusted_setup(ETH_G1_POINTS, ETH_G2_POINTS)
-            .expect("failed to load trusted setup"),
-    )
+        KzgSettings::from_raw(&RAW_KZG_SETTINGS).unwrap()
+    }
 }
 
 #[cfg(test)]

@@ -25,9 +25,8 @@ use bytemuck::{cast_slice, try_cast_slice, Pod, Zeroable};
 #[cfg(not(target_os = "zkvm"))]
 use core::ffi::CStr;
 use core::fmt;
-use core::mem::{size_of, MaybeUninit};
+use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
-use core::pin::Pin;
 
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use alloc::ffi::CString;
@@ -45,6 +44,9 @@ unsafe impl Pod for blst_p2 {}
 
 pub const BYTES_PER_G1_POINT: usize = 48;
 pub const BYTES_PER_G2_POINT: usize = 96;
+
+/// Number of roots of unity required for the kzg trusted setup.
+pub const NUM_ROOTS_OF_UNITY: usize = NUM_G1_POINTS.next_power_of_two();
 
 /// Number of G1 points required for the kzg trusted setup.
 pub const NUM_G1_POINTS: usize = 4096;
@@ -140,80 +142,60 @@ pub fn hex_to_bytes(hex_str: &str) -> Result<Vec<u8>, Error> {
         .map_err(|e| Error::InvalidHexFormat(format!("Failed to decode hex: {}", e)))
 }
 
+/// This struct is used to efficiently load [KZGSettings] from static byte arrays.
+#[repr(align(8))]
+pub(crate) struct RawKzgSettings {
+    pub roots_of_unity: [u8; NUM_ROOTS_OF_UNITY * size_of::<fr_t>()],
+    pub g1_points: [u8; NUM_G1_POINTS * size_of::<g1_t>()],
+    pub g2_points: [u8; NUM_G2_POINTS * size_of::<g2_t>()],
+}
+
 /// Holds the parameters of a kzg trusted setup ceremony.
 impl KZGSettings {
-    /// Zero-copy deserialization from a byte slice. The buffer must be exactly the expected size.
+    /// Loads settings from a static raw representation.
     ///
-    /// # Safety
+    /// Creates a new `KZGSettings` instance that references data stored in the provided
+    /// `RawKzgSettings`. The raw settings must have static lifetime.
     ///
-    /// This function is unsafe because it performs raw pointer casts into the underlying
-    /// buffer. The caller must ensure the provided `Pin<&'static [u8]>` points to memory
-    /// that is laid out exactly as expected by `KZGSettings` and that the memory remains
-    /// valid and pinned for the lifetime of the returned object.
-    ///
-    /// **Important Ownership Note:**
-    /// The returned `KZGSettings` instance stores internal pointers into the provided buffer.
-    /// Thus, its contents must not be freed. Since the current `Drop` implementation always calls
-    /// `free_trusted_setup`, callers **must** ensure that the destructor is not run by wrapping
-    /// the result in `ManuallyDrop` or otherwise handling the ownership semantics.
-    pub(crate) unsafe fn deserialize(buf: Pin<&'static [u8]>) -> Option<Self> {
-        // Make sure the buffer is large enough for max_width.
-        let size_u64 = size_of::<u64>();
-        if buf.len() < size_u64 {
-            return None;
-        }
-
-        let (max_width_bytes, rest) = buf.split_at(size_u64);
-        let max_width = u64::from_ne_bytes(max_width_bytes.try_into().unwrap());
-        let num_roots: usize = max_width.try_into().ok()?;
-
-        // Calculate bytes required per section.
-        let bytes_for_roots = num_roots.checked_mul(size_of::<fr_t>())?;
-        let bytes_for_g1 = NUM_G1_POINTS.checked_mul(size_of::<g1_t>())?;
-        let bytes_for_g2 = NUM_G2_POINTS.checked_mul(size_of::<g2_t>())?;
-        let total_size = size_u64
-            .checked_add(bytes_for_roots)?
-            .checked_add(bytes_for_g1)?
-            .checked_add(bytes_for_g2)?;
-        if buf.len() != total_size {
-            return None;
-        }
-
-        // Split the rest of the buffer accordingly
-        let (roots_bytes, rest) = rest.split_at(bytes_for_roots);
-        let roots_of_unity = try_cast_slice(roots_bytes).ok()?.as_ptr();
-        let (g1_bytes, g2_bytes) = rest.split_at(bytes_for_g1);
-        let g1_values = try_cast_slice(g1_bytes).ok()?.as_ptr();
-        let g2_values = try_cast_slice(g2_bytes).ok()?.as_ptr();
-
-        Some(Self {
-            max_width,
-            roots_of_unity,
-            g1_values,
-            g2_values,
+    /// # Safety and Ownership
+    /// The returned instance contains pointers to the data in `raw`, not copies.
+    /// The caller must ensure that the destructor is not run (as it would
+    /// attempt to free memory it doesn't own)
+    #[inline]
+    pub(crate) fn from_raw(raw: &'static RawKzgSettings) -> Result<Self, bytemuck::PodCastError> {
+        Ok(Self {
+            max_width: NUM_ROOTS_OF_UNITY as u64,
+            roots_of_unity: try_cast_slice(&raw.roots_of_unity)?.as_ptr(),
+            g1_values: try_cast_slice(&raw.g1_points)?.as_ptr(),
+            g2_values: try_cast_slice(&raw.g2_points)?.as_ptr(),
         })
     }
 
-    /// Serializes the KZGSettings into a byte vector.
-    pub(crate) unsafe fn serialize(&self) -> Vec<u8> {
-        let num_roots = self.max_width as usize;
-        let total_size = size_of::<u64>()
-            + num_roots * size_of::<fr_t>()
-            + NUM_G1_POINTS * size_of::<g1_t>()
-            + NUM_G2_POINTS * size_of::<g2_t>();
+    /// Converts the settings to a heap-allocated raw representation.
+    pub(crate) fn to_raw(&self) -> Box<RawKzgSettings> {
+        unsafe {
+            let roots_of_unity: &[u8] = cast_slice(slice::from_raw_parts(
+                self.roots_of_unity,
+                self.max_width.try_into().unwrap(),
+            ));
+            let g1_points: &[u8] = cast_slice(slice::from_raw_parts(self.g1_values, NUM_G1_POINTS));
+            let g2_points: &[u8] = cast_slice(slice::from_raw_parts(self.g2_values, NUM_G2_POINTS));
 
-        let mut buf = Vec::with_capacity(total_size);
+            // allocate uninitialized memory on the heap
+            let mut uninit = Box::new(MaybeUninit::<RawKzgSettings>::uninit());
+            {
+                // get a mutable reference to the uninitialized struct
+                let settings_ref = &mut *uninit.as_mut_ptr();
 
-        buf.extend_from_slice(&self.max_width.to_ne_bytes());
+                // initialize each field with the provided data
+                settings_ref.roots_of_unity.copy_from_slice(roots_of_unity);
+                settings_ref.g1_points.copy_from_slice(g1_points);
+                settings_ref.g2_points.copy_from_slice(g2_points);
+            }
 
-        let roots_bytes = cast_slice(slice::from_raw_parts(self.roots_of_unity, num_roots));
-        buf.extend_from_slice(roots_bytes);
-        let g1_bytes = cast_slice(slice::from_raw_parts(self.g1_values, NUM_G1_POINTS));
-        buf.extend_from_slice(g1_bytes);
-        let g2_bytes = cast_slice(slice::from_raw_parts(self.g2_values, NUM_G2_POINTS));
-        buf.extend_from_slice(g2_bytes);
-
-        buf
+            // SAFETY: all fields of the struct have been initialized
+            Box::from_raw(Box::into_raw(uninit) as *mut RawKzgSettings)
+        }
     }
 
     /// Initializes a trusted setup from `FIELD_ELEMENTS_PER_BLOB` g1 points
@@ -766,7 +748,7 @@ mod tests {
     use super::*;
     use crate::KzgSettings;
     use rand::{rngs::ThreadRng, Rng};
-    use std::{fs, mem, mem::ManuallyDrop, path::PathBuf};
+    use std::{fs, mem::ManuallyDrop, path::PathBuf};
     use test_formats::{
         blob_to_kzg_commitment_test, compute_blob_kzg_proof, compute_kzg_proof,
         verify_blob_kzg_proof, verify_blob_kzg_proof_batch, verify_kzg_proof,
@@ -775,19 +757,27 @@ mod tests {
     #[test]
     fn test_round_trip() {
         let trusted_setup_file = Path::new("src/trusted_setup.txt");
-        let original_settings = KZGSettings::load_trusted_setup_file(trusted_setup_file).unwrap();
+        let exp_settings = KZGSettings::load_trusted_setup_file(trusted_setup_file).unwrap();
+
+        let raw = exp_settings.to_raw();
+        // Leak and pin the serialized buffer to obtain a slice with static lifetime.
+        let raw = Box::leak(raw);
+        let settings = KzgSettings::from_raw(raw).unwrap();
+        // Wrap in ManuallyDrop so that the destructor is not run.
+        let settings = ManuallyDrop::new(settings);
 
         unsafe {
-            let bytes = original_settings.serialize();
-            // Leak and pin the serialized buffer to obtain a slice with static lifetime.
-            let bytes = Pin::static_ref(Box::leak(bytes.into_boxed_slice()));
-            let deserialized_settings = KzgSettings::deserialize(bytes).unwrap();
-            // Wrap in ManuallyDrop so that the destructor is not run.
-            let deserialized_settings = ManuallyDrop::new(deserialized_settings);
-
             assert_eq!(
-                original_settings.max_width, deserialized_settings.max_width,
-                "Round trip failed: max_width does not match"
+                slice::from_raw_parts(exp_settings.roots_of_unity, exp_settings.max_width as usize),
+                slice::from_raw_parts(settings.roots_of_unity, settings.max_width as usize)
+            );
+            assert_eq!(
+                slice::from_raw_parts(exp_settings.g1_values, NUM_G1_POINTS),
+                slice::from_raw_parts(settings.g1_values, NUM_G1_POINTS)
+            );
+            assert_eq!(
+                slice::from_raw_parts(exp_settings.g2_values, NUM_G2_POINTS),
+                slice::from_raw_parts(settings.g2_values, NUM_G2_POINTS)
             );
         }
     }
