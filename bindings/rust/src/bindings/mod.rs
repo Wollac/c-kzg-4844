@@ -27,12 +27,12 @@ use core::ffi::CStr;
 use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
+use core::slice;
 
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use alloc::ffi::CString;
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use std::path::Path;
-use std::slice;
 
 // These types can be marked as Pod.
 unsafe impl Zeroable for blst_fr {}
