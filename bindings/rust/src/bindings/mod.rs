@@ -1,27 +1,52 @@
-#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals
+)]
 
 #[cfg(feature = "serde")]
 mod serde;
 #[cfg(test)]
 mod test_formats;
 
+#[cfg(target_os = "zkvm")]
+// Mock libc, so that the rust-bindgen code compiles without modifications.
+mod libc {
+    #[repr(C)]
+    pub struct FILE([u8; 0]);
+}
+
 include!("./generated.rs");
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use bytemuck::{cast_slice, try_cast_slice, Pod, Zeroable};
 #[cfg(not(target_os = "zkvm"))]
 use core::ffi::CStr;
 use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
+use core::slice;
 
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use alloc::ffi::CString;
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use std::path::Path;
 
+// These types can be marked as Pod.
+unsafe impl Zeroable for blst_fr {}
+unsafe impl Pod for blst_fr {}
+unsafe impl Zeroable for blst_p1 {}
+unsafe impl Pod for blst_p1 {}
+unsafe impl Zeroable for blst_p2 {}
+unsafe impl Pod for blst_p2 {}
+
 pub const BYTES_PER_G1_POINT: usize = 48;
 pub const BYTES_PER_G2_POINT: usize = 96;
+
+/// Number of roots of unity required for the kzg trusted setup.
+pub const NUM_ROOTS_OF_UNITY: usize = NUM_G1_POINTS.next_power_of_two();
 
 /// Number of G1 points required for the kzg trusted setup.
 pub const NUM_G1_POINTS: usize = 4096;
@@ -117,21 +142,59 @@ pub fn hex_to_bytes(hex_str: &str) -> Result<Vec<u8>, Error> {
         .map_err(|e| Error::InvalidHexFormat(format!("Failed to decode hex: {}", e)))
 }
 
+/// This struct is used to efficiently load [KZGSettings] from static byte arrays.
+#[repr(align(8))]
+pub(crate) struct RawKzgSettings {
+    pub roots_of_unity: [u8; NUM_ROOTS_OF_UNITY * size_of::<fr_t>()],
+    pub g1_points: [u8; NUM_G1_POINTS * size_of::<g1_t>()],
+    pub g2_points: [u8; NUM_G2_POINTS * size_of::<g2_t>()],
+}
+
 /// Holds the parameters of a kzg trusted setup ceremony.
 impl KZGSettings {
-    pub fn from_u8_slice(data: &mut [u8]) -> Self {
-        let size_max_length = core::mem::size_of::<u64>();
-        let max_width: u64 = u64::from_be_bytes(data[0..size_max_length].try_into().unwrap());
+    /// Loads settings from a static raw representation.
+    ///
+    /// Creates a new `KZGSettings` instance that references data stored in the provided
+    /// `RawKzgSettings`. The raw settings must have static lifetime.
+    ///
+    /// # Safety and Ownership
+    /// The returned instance contains pointers to the data in `raw`, not copies.
+    /// The caller must ensure that the destructor is not run (as it would
+    /// attempt to free memory it doesn't own)
+    #[inline]
+    pub(crate) fn from_raw(raw: &'static RawKzgSettings) -> Result<Self, bytemuck::PodCastError> {
+        Ok(Self {
+            max_width: NUM_ROOTS_OF_UNITY as u64,
+            roots_of_unity: try_cast_slice(&raw.roots_of_unity)?.as_ptr(),
+            g1_values: try_cast_slice(&raw.g1_points)?.as_ptr(),
+            g2_values: try_cast_slice(&raw.g2_points)?.as_ptr(),
+        })
+    }
 
-        let size_roots_of_unity = core::mem::size_of::<fr_t>() * max_width as usize;
-        let size_g1_values = core::mem::size_of::<g1_t>() * FIELD_ELEMENTS_PER_BLOB;
+    /// Converts the settings to a heap-allocated raw representation.
+    pub(crate) fn to_raw(&self) -> Box<RawKzgSettings> {
+        unsafe {
+            let roots_of_unity: &[u8] = cast_slice(slice::from_raw_parts(
+                self.roots_of_unity,
+                self.max_width.try_into().unwrap(),
+            ));
+            let g1_points: &[u8] = cast_slice(slice::from_raw_parts(self.g1_values, NUM_G1_POINTS));
+            let g2_points: &[u8] = cast_slice(slice::from_raw_parts(self.g2_values, NUM_G2_POINTS));
 
-        Self {
-            max_width,
-            roots_of_unity: data[size_max_length..].as_mut_ptr() as *mut fr_t,
-            g1_values: data[size_max_length + size_roots_of_unity..].as_mut_ptr() as *mut blst_p1,
-            g2_values: data[size_max_length + size_roots_of_unity + size_g1_values..].as_mut_ptr()
-                as *mut blst_p2,
+            // allocate uninitialized memory on the heap
+            let mut uninit = Box::new(MaybeUninit::<RawKzgSettings>::uninit());
+            {
+                // get a mutable reference to the uninitialized struct
+                let settings_ref = &mut *uninit.as_mut_ptr();
+
+                // initialize each field with the provided data
+                settings_ref.roots_of_unity.copy_from_slice(roots_of_unity);
+                settings_ref.g1_points.copy_from_slice(g1_points);
+                settings_ref.g2_points.copy_from_slice(g2_points);
+            }
+
+            // SAFETY: all fields of the struct have been initialized
+            Box::from_raw(Box::into_raw(uninit) as *mut RawKzgSettings)
         }
     }
 
@@ -683,12 +746,41 @@ unsafe impl Send for KZGSettings {}
 #[allow(unused_imports, dead_code)]
 mod tests {
     use super::*;
+    use crate::KzgSettings;
     use rand::{rngs::ThreadRng, Rng};
-    use std::{fs, path::PathBuf};
+    use std::{fs, mem::ManuallyDrop, path::PathBuf};
     use test_formats::{
         blob_to_kzg_commitment_test, compute_blob_kzg_proof, compute_kzg_proof,
         verify_blob_kzg_proof, verify_blob_kzg_proof_batch, verify_kzg_proof,
     };
+
+    #[test]
+    fn test_round_trip() {
+        let trusted_setup_file = Path::new("src/trusted_setup.txt");
+        let exp_settings = KZGSettings::load_trusted_setup_file(trusted_setup_file).unwrap();
+
+        let raw = exp_settings.to_raw();
+        // Leak and pin the serialized buffer to obtain a slice with static lifetime.
+        let raw = Box::leak(raw);
+        let settings = KzgSettings::from_raw(raw).unwrap();
+        // Wrap in ManuallyDrop so that the destructor is not run.
+        let settings = ManuallyDrop::new(settings);
+
+        unsafe {
+            assert_eq!(
+                slice::from_raw_parts(exp_settings.roots_of_unity, exp_settings.max_width as usize),
+                slice::from_raw_parts(settings.roots_of_unity, settings.max_width as usize)
+            );
+            assert_eq!(
+                slice::from_raw_parts(exp_settings.g1_values, NUM_G1_POINTS),
+                slice::from_raw_parts(settings.g1_values, NUM_G1_POINTS)
+            );
+            assert_eq!(
+                slice::from_raw_parts(exp_settings.g2_values, NUM_G2_POINTS),
+                slice::from_raw_parts(settings.g2_values, NUM_G2_POINTS)
+            );
+        }
+    }
 
     fn generate_random_blob(rng: &mut ThreadRng) -> Blob {
         let mut arr = [0u8; BYTES_PER_BLOB];

@@ -111,12 +111,12 @@ typedef struct {
     /** Powers of the primitive root of unity determined by
      * `SCALE2_ROOT_OF_UNITY` in bit-reversal permutation order,
      * length `max_width`. */
-    fr_t *roots_of_unity;
+    const fr_t *roots_of_unity;
     /** G1 group elements from the trusted setup,
      * in Lagrange form bit-reversal permutation. */
-    g1_t *g1_values;
+    const g1_t *g1_values;
     /** G2 group elements from the trusted setup. */
-    g2_t *g2_values;
+    const g2_t *g2_values;
 } KZGSettings;
 
 ///////////////////////////////////////////////////////////////////////////////

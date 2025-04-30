@@ -26,6 +26,10 @@ serde = ["dep:serde"]
 generate-bindings = ["dep:bindgen"]
 ethereum_kzg_settings = ["dep:once_cell"]
 
+# When this is enabled, the roots_of_unity.bin, g1_points.bin and g2_points.bin
+# files are generated from scratch
+generate_ethereum_kzg_settings = ["ethereum_kzg_settings", "std"]
+
 # This is a standalone feature so that crates that disable default features can
 # enable blst/portable without having to add it as a dependency
 portable = ["blst/portable"]
@@ -41,15 +45,16 @@ risc0-ffi = []
 
 [dependencies]
 blst = { version = "0.3.14", default-features = false }
+bytemuck = { version = "1.0" }
 hex = { version = "0.4.2", default-features = false, features = ["alloc"] }
 libc = { version = "0.2", default-features = false }
+once_cell = { version = "1.19", default-features = false, features = [
+    "alloc",
+], optional = true }
 serde = { version = "1.0", optional = true, default-features = false, features = [
     "alloc",
     "derive",
 ] }
-once_cell = { version = "1.19", default-features = false, features = [
-    "alloc",
-], optional = true }
 
 [dev-dependencies]
 criterion = "0.5.1"
