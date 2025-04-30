@@ -1,40 +1,70 @@
 use crate::KzgSettings;
-use alloc::{boxed::Box, sync::Arc};
-use once_cell::race::OnceBox;
+use alloc::sync::Arc;
+use once_cell::sync::Lazy;
 
-/// Default G1 Lagrange bytes.
-const ETH_G1_MONOMIAL_POINTS: &[u8] = include_bytes!("./g1_monomial_bytes.bin");
-/// Default G1 Lagrange bytes.
-const ETH_G1_LAGRANGE_POINTS: &[u8] = include_bytes!("./g1_lagrange_bytes.bin");
-/// Default G2 monomial bytes.
-const ETH_G2_MONOMIAL_POINTS: &[u8] = include_bytes!("./g2_monomial_bytes.bin");
+/// A lazily initialized global instance of Ethereum mainnet KZG settings.
+static ETHEREUM_KZG_SETTINGS: Lazy<Arc<KzgSettings>> = Lazy::new(|| Arc::new(load_kzg_settings()));
 
 /// Returns default Ethereum mainnet KZG settings.
 ///
 /// If you need a cloneable settings use `ethereum_kzg_settings_arc` instead.
-pub fn ethereum_kzg_settings(precompute: u64) -> &'static KzgSettings {
-    ethereum_kzg_settings_inner(precompute).as_ref()
+pub fn ethereum_kzg_settings(_precompute: u64) -> &'static KzgSettings {
+    &ETHEREUM_KZG_SETTINGS
 }
 
 /// Returns default Ethereum mainnet KZG settings as an `Arc`.
 ///
 /// It is useful for sharing the settings in multiple places.
-pub fn ethereum_kzg_settings_arc(precompute: u64) -> Arc<KzgSettings> {
-    ethereum_kzg_settings_inner(precompute).clone()
+pub fn ethereum_kzg_settings_arc(_precompute: u64) -> Arc<KzgSettings> {
+    ETHEREUM_KZG_SETTINGS.clone()
 }
 
-fn ethereum_kzg_settings_inner(precompute: u64) -> &'static Arc<KzgSettings> {
-    static DEFAULT: OnceBox<Arc<KzgSettings>> = OnceBox::new();
-    DEFAULT.get_or_init(|| {
-        let settings = KzgSettings::load_trusted_setup(
-            ETH_G1_MONOMIAL_POINTS,
-            ETH_G1_LAGRANGE_POINTS,
-            ETH_G2_MONOMIAL_POINTS,
-            precompute,
-        )
-        .expect("failed to load default trusted setup");
-        Box::new(Arc::new(settings))
-    })
+#[cfg(feature = "generate_ethereum_kzg_settings")]
+fn generate_kzg_settings() -> std::io::Result<&'static crate::bindings::RawKzgSettings> {
+    use std::{fs::File, io::Write, path::PathBuf};
+
+    let trusted_setup = include_str!("../../../../src/trusted_setup.txt");
+    let settings = KzgSettings::parse_kzg_trusted_setup(trusted_setup, 0).unwrap();
+
+    let raw = settings.to_raw();
+
+    let mut root_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    root_dir.push("bindings/rust/src/ethereum_kzg_settings");
+
+    File::create(root_dir.join("roots_of_unity.bin"))?.write_all(&raw.roots_of_unity)?;
+    File::create(root_dir.join("brp_roots_of_unity.bin"))?.write_all(&raw.brp_roots_of_unity)?;
+    File::create(root_dir.join("reverse_roots_of_unity.bin"))?
+        .write_all(&raw.reverse_roots_of_unity)?;
+    File::create(root_dir.join("g1_values_monomial.bin"))?.write_all(&raw.g1_values_monomial)?;
+    File::create(root_dir.join("g1_values_lagrange_brp.bin"))?
+        .write_all(&raw.g1_values_lagrange_brp)?;
+    File::create(root_dir.join("g2_values_monomial.bin"))?.write_all(&raw.g2_values_monomial)?;
+    File::create(root_dir.join("x_ext_fft_columns.bin"))?.write_all(&raw.x_ext_fft_columns)?;
+
+    Ok(Box::leak(raw))
+}
+
+fn load_kzg_settings() -> KzgSettings {
+    #[cfg(feature = "generate_ethereum_kzg_settings")]
+    return KzgSettings::from_raw(generate_kzg_settings().expect("failed to write KZG settings"))
+        .unwrap();
+    #[cfg(not(feature = "generate_ethereum_kzg_settings"))]
+    {
+        use crate::bindings::RawKzgSettings;
+        static RAW_KZG_SETTINGS: RawKzgSettings = RawKzgSettings {
+            roots_of_unity: *include_bytes!("roots_of_unity.bin"),
+            brp_roots_of_unity: *include_bytes!("brp_roots_of_unity.bin"),
+            reverse_roots_of_unity: *include_bytes!("reverse_roots_of_unity.bin"),
+            g1_values_monomial: *include_bytes!("g1_values_monomial.bin"),
+            g1_values_lagrange_brp: *include_bytes!("g1_values_lagrange_brp.bin"),
+            g2_values_monomial: *include_bytes!("g2_values_monomial.bin"),
+            x_ext_fft_columns: *include_bytes!("x_ext_fft_columns.bin"),
+            wbits: 0,
+            scratch_size: 0,
+        };
+
+        KzgSettings::from_raw(&RAW_KZG_SETTINGS).unwrap()
+    }
 }
 
 #[cfg(test)]

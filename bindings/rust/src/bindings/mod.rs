@@ -10,24 +10,47 @@ mod test_formats;
 
 use arbitrary::Arbitrary;
 
+#[cfg(target_os = "zkvm")]
+// Mock libc, so that the rust-bindgen code compiles without modifications.
+mod libc {
+    #[repr(C)]
+    pub struct FILE([u8; 0]);
+}
+
 include!("./generated.rs");
 
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use bytemuck::{cast_slice, try_cast_slice, Pod, Zeroable};
+#[cfg(not(target_os = "zkvm"))]
 use core::ffi::CStr;
 use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 use core::ptr;
+use core::slice;
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use alloc::ffi::CString;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use std::path::Path;
+
+// These types can be marked as Pod.
+unsafe impl Zeroable for blst_fr {}
+unsafe impl Pod for blst_fr {}
+unsafe impl Zeroable for blst_p1 {}
+unsafe impl Pod for blst_p1 {}
+unsafe impl Zeroable for blst_p1_affine {}
+unsafe impl Pod for blst_p1_affine {}
+unsafe impl Zeroable for blst_p2 {}
+unsafe impl Pod for blst_p2 {}
 
 const BYTES_PER_G1_POINT: usize = 48;
 const BYTES_PER_G2_POINT: usize = 96;
+
+/// Number of roots of unity required for the kzg trusted setup.
+pub const NUM_ROOTS_OF_UNITY: usize = NUM_G1_POINTS.next_power_of_two();
 
 /// Number of G1 points required for the kzg trusted setup.
 const NUM_G1_POINTS: usize = 4096;
@@ -74,6 +97,29 @@ pub enum Error {
     LoadingTrustedSetupFailed(KzgErrors),
     /// The underlying c-kzg library returned an error.
     CError(C_KZG_RET),
+}
+
+/// This struct is used to efficiently load [KZGSettings] from static byte arrays.
+#[repr(align(8))]
+pub(crate) struct RawKzgSettings {
+    #[doc = " Roots of unity for the subgroup of size `FIELD_ELEMENTS_PER_EXT_BLOB`.\n\n The array contains `FIELD_ELEMENTS_PER_EXT_BLOB + 1` elements.\n The array starts and ends with Fr::one()."]
+    pub roots_of_unity: [u8; (FIELD_ELEMENTS_PER_EXT_BLOB + 1) * size_of::<fr_t>()],
+    #[doc = " Roots of unity for the subgroup of size `FIELD_ELEMENTS_PER_EXT_BLOB` in bit-reversed order.\n\n This array is derived by applying a bit-reversal permutation to `roots_of_unity`\n excluding the last element. Essentially:\n   `brp_roots_of_unity = bit_reversal_permutation(roots_of_unity[:-1])`\n\n The array contains `FIELD_ELEMENTS_PER_EXT_BLOB` elements."]
+    pub brp_roots_of_unity: [u8; (FIELD_ELEMENTS_PER_EXT_BLOB) * size_of::<fr_t>()],
+    #[doc = " Roots of unity for the subgroup of size `FIELD_ELEMENTS_PER_EXT_BLOB` in reversed order.\n\n It is the reversed version of `roots_of_unity`. Essentially:\n    `reverse_roots_of_unity = reverse(roots_of_unity)`\n\n This array is primarily used in FFTs.\n The array contains `FIELD_ELEMENTS_PER_EXT_BLOB + 1` elements.\n The array starts and ends with Fr::one()."]
+    pub reverse_roots_of_unity: [u8; (FIELD_ELEMENTS_PER_EXT_BLOB + 1) * size_of::<fr_t>()],
+    #[doc = " G1 group elements from the trusted setup in monomial form.\n The array contains `NUM_G1_POINTS = FIELD_ELEMENTS_PER_BLOB` elements."]
+    pub g1_values_monomial: [u8; NUM_G1_POINTS * size_of::<g1_t>()],
+    #[doc = " G1 group elements from the trusted setup in Lagrange form and bit-reversed order.\n The array contains `NUM_G1_POINTS = FIELD_ELEMENTS_PER_BLOB` elements."]
+    pub g1_values_lagrange_brp: [u8; NUM_G1_POINTS * size_of::<g1_t>()],
+    #[doc = " G2 group elements from the trusted setup in monomial form.\n The array contains `NUM_G2_POINTS` elements."]
+    pub g2_values_monomial: [u8; NUM_G2_POINTS * size_of::<g2_t>()],
+    #[doc = " Data used during FK20 proof generation."]
+    pub x_ext_fft_columns: [u8; CELLS_PER_EXT_BLOB * 128 * size_of::<g1_t>()],
+    #[doc = " The window size for the fixed-base MSM."]
+    pub wbits: usize,
+    #[doc = " The scratch size for the fixed-base MSM."]
+    pub scratch_size: usize,
 }
 
 #[cfg(feature = "std")]
@@ -127,6 +173,88 @@ pub fn hex_to_bytes(hex_str: &str) -> Result<Vec<u8>, Error> {
 
 /// Holds the parameters of a kzg trusted setup ceremony.
 impl KZGSettings {
+    /// Loads settings from a static raw representation.
+    ///
+    /// Creates a new `KZGSettings` instance that references data stored in the provided
+    /// `RawKzgSettings`. The raw settings must have static lifetime.
+    ///
+    /// # Safety and Ownership
+    /// The returned instance contains pointers to the data in `raw`, not copies.
+    /// The caller must ensure that the destructor is not run (as it would
+    /// attempt to free memory it doesn't own)
+    #[inline]
+    pub(crate) fn from_raw(raw: &'static RawKzgSettings) -> Result<Self, bytemuck::PodCastError> {
+        let x_ext_fft_columns = raw.x_ext_fft_columns.as_ptr() as *const _;
+        Ok(Self {
+            roots_of_unity: try_cast_slice(&raw.roots_of_unity)?.as_ptr(),
+            brp_roots_of_unity: try_cast_slice(&raw.brp_roots_of_unity)?.as_ptr(),
+            reverse_roots_of_unity: try_cast_slice(&raw.reverse_roots_of_unity)?.as_ptr(),
+            g1_values_monomial: try_cast_slice(&raw.g1_values_monomial)?.as_ptr(),
+            g1_values_lagrange_brp: try_cast_slice(&raw.g1_values_lagrange_brp)?.as_ptr(),
+            g2_values_monomial: try_cast_slice(&raw.g2_values_monomial)?.as_ptr(),
+            x_ext_fft_columns,
+            tables: ptr::null(),
+            wbits: raw.wbits,
+            scratch_size: raw.scratch_size,
+        })
+    }
+
+    /// Converts the settings to a heap-allocated raw representation.
+    pub(crate) fn to_raw(&self) -> Box<RawKzgSettings> {
+        println!("wut");
+        unsafe {
+            let roots_of_unity: &[u8] = cast_slice(slice::from_raw_parts(
+                self.roots_of_unity,
+                FIELD_ELEMENTS_PER_EXT_BLOB + 1,
+            ));
+            let brp_roots_of_unity: &[u8] = cast_slice(slice::from_raw_parts(
+                self.brp_roots_of_unity,
+                FIELD_ELEMENTS_PER_EXT_BLOB,
+            ));
+            let reverse_roots_of_unity: &[u8] = cast_slice(slice::from_raw_parts(
+                self.reverse_roots_of_unity,
+                FIELD_ELEMENTS_PER_EXT_BLOB + 1,
+            ));
+            let g1_values_monomial: &[u8] = cast_slice(slice::from_raw_parts(
+                self.g1_values_monomial,
+                NUM_G1_POINTS,
+            ));
+            let g1_values_lagrange_brp: &[u8] = cast_slice(slice::from_raw_parts(
+                self.g1_values_lagrange_brp,
+                NUM_G1_POINTS,
+            ));
+            let g2_values_monomial: &[u8] = cast_slice(slice::from_raw_parts(
+                self.g2_values_monomial,
+                NUM_G2_POINTS,
+            ));
+            let x_ext_fft_columns: &[u8] = cast_slice(slice::from_raw_parts(
+                self.x_ext_fft_columns as *const g1_t,
+                CELLS_PER_EXT_BLOB * 128,
+            ));
+
+            // allocate uninitialized memory on the heap
+            let mut result = Box::<RawKzgSettings>::new_uninit();
+
+            {
+                let raw = &mut *result.as_mut_ptr();
+                // set values
+                raw.roots_of_unity.copy_from_slice(roots_of_unity);
+                raw.brp_roots_of_unity.copy_from_slice(brp_roots_of_unity);
+                raw.reverse_roots_of_unity
+                    .copy_from_slice(reverse_roots_of_unity);
+                raw.g1_values_monomial.copy_from_slice(g1_values_monomial);
+                raw.g1_values_lagrange_brp
+                    .copy_from_slice(g1_values_lagrange_brp);
+                raw.g2_values_monomial.copy_from_slice(g2_values_monomial);
+                raw.x_ext_fft_columns.copy_from_slice(x_ext_fft_columns);
+                raw.wbits = self.wbits;
+                raw.scratch_size = self.scratch_size;
+            }
+
+            result.assume_init()
+        }
+    }
+
     /// Initializes a trusted setup from a flat array of `FIELD_ELEMENTS_PER_BLOB` G1 points in monomial form, a flat
     /// array of `FIELD_ELEMENTS_PER_BLOB` G1 points in Lagrange form, and a flat array of 65 G2 points in monomial
     /// form.
@@ -166,6 +294,7 @@ impl KZGSettings {
     /// 65 g2 byte values in monomial form
     /// FIELD_ELEMENT_PER_BLOB g1 byte values in monomial form
     #[cfg(feature = "std")]
+    #[cfg(not(target_os = "zkvm"))]
     pub fn load_trusted_setup_file(file_path: &Path, precompute: u64) -> Result<Self, Error> {
         #[cfg(unix)]
         let file_path_bytes = {
@@ -261,6 +390,7 @@ impl KZGSettings {
     /// 65 g2 byte values in monomial form
     /// FIELD_ELEMENT_PER_BLOB g1 byte values in monomial form
     #[cfg(not(feature = "std"))]
+    #[cfg(not(target_os = "zkvm"))]
     pub fn load_trusted_setup_file(file_path: &CStr, precompute: u64) -> Result<Self, Error> {
         Self::load_trusted_setup_file_inner(file_path, precompute)
     }
@@ -270,6 +400,7 @@ impl KZGSettings {
     /// Same as [`load_trusted_setup_file`](Self::load_trusted_setup_file)
     #[cfg_attr(not(feature = "std"), doc = ", but takes a `CStr` instead of a `Path`")]
     /// .
+    #[cfg(not(target_os = "zkvm"))]
     pub fn load_trusted_setup_file_inner(file_path: &CStr, precompute: u64) -> Result<Self, Error> {
         // SAFETY: `b"r\0"` is a valid null-terminated string.
         const MODE: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"r\0") };
@@ -909,7 +1040,9 @@ unsafe impl Send for KZGSettings {}
 #[allow(unused_imports, dead_code)]
 mod tests {
     use super::*;
+    use crate::KzgSettings;
     use rand::{rngs::ThreadRng, Rng};
+    use std::mem::ManuallyDrop;
     use std::{fs, path::PathBuf};
     use test_formats::{
         blob_to_kzg_commitment_test, compute_blob_kzg_proof, compute_cells,
@@ -918,6 +1051,58 @@ mod tests {
         verify_kzg_proof,
     };
 
+    #[test]
+    fn test_round_trip() {
+        let trusted_setup_file = Path::new("src/trusted_setup.txt");
+        let exp_settings = KZGSettings::load_trusted_setup_file(trusted_setup_file, 0).unwrap();
+
+        let raw = exp_settings.to_raw();
+        // Leak and pin the serialized buffer to obtain a slice with static lifetime.
+        let raw = Box::leak(raw);
+        let settings = KzgSettings::from_raw(raw).unwrap();
+        // Wrap in ManuallyDrop so that the destructor is not run.
+        let settings = ManuallyDrop::new(settings);
+
+        unsafe {
+            assert_eq!(
+                slice::from_raw_parts(exp_settings.roots_of_unity, FIELD_ELEMENTS_PER_EXT_BLOB + 1),
+                slice::from_raw_parts(settings.roots_of_unity, FIELD_ELEMENTS_PER_EXT_BLOB + 1)
+            );
+            assert_eq!(
+                slice::from_raw_parts(exp_settings.brp_roots_of_unity, FIELD_ELEMENTS_PER_EXT_BLOB),
+                slice::from_raw_parts(settings.brp_roots_of_unity, FIELD_ELEMENTS_PER_EXT_BLOB)
+            );
+            assert_eq!(
+                slice::from_raw_parts(
+                    exp_settings.reverse_roots_of_unity,
+                    FIELD_ELEMENTS_PER_EXT_BLOB + 1
+                ),
+                slice::from_raw_parts(
+                    settings.reverse_roots_of_unity,
+                    FIELD_ELEMENTS_PER_EXT_BLOB + 1
+                )
+            );
+
+            assert_eq!(
+                slice::from_raw_parts(exp_settings.g1_values_monomial, NUM_G1_POINTS),
+                slice::from_raw_parts(settings.g1_values_monomial, NUM_G1_POINTS)
+            );
+            assert_eq!(
+                slice::from_raw_parts(exp_settings.g1_values_lagrange_brp, NUM_G1_POINTS),
+                slice::from_raw_parts(settings.g1_values_lagrange_brp, NUM_G1_POINTS)
+            );
+
+            assert_eq!(
+                slice::from_raw_parts(exp_settings.g2_values_monomial, NUM_G2_POINTS),
+                slice::from_raw_parts(settings.g2_values_monomial, NUM_G2_POINTS)
+            );
+
+            assert_eq!(
+                slice::from_raw_parts(exp_settings.x_ext_fft_columns, CELLS_PER_EXT_BLOB),
+                slice::from_raw_parts(settings.x_ext_fft_columns, CELLS_PER_EXT_BLOB)
+            );
+        }
+    }
     fn generate_random_blob(rng: &mut ThreadRng) -> Blob {
         let mut arr = [0u8; BYTES_PER_BLOB];
         rng.fill(&mut arr[..]);
