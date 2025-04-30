@@ -20,7 +20,7 @@ build = "bindings/rust/build.rs"
 path = "bindings/rust/src/lib.rs"
 
 [features]
-default = ["std", "portable", "ethereum_kzg_settings"]
+default = ["std", "portable", "ethereum_kzg_settings", "risc0-ffi"]
 std = ["hex/std", "libc/std", "serde?/std", "once_cell?/std"]
 serde = ["dep:serde"]
 generate-bindings = ["dep:bindgen"]
@@ -34,7 +34,6 @@ portable = ["blst/portable"]
 # Suppress multi-threading.
 # Engaged on wasm32 target architecture automatically.
 no-threads = ["blst/no-threads"]
-
 
 # RISC Zero zkVM FFI bindings.
 # Defines malloc/calloc/free/assert for C.

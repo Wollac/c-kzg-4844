@@ -30,7 +30,8 @@ pub use bindings::{
 };
 // Expose the remaining relevant types.
 pub use bindings::{Blob, Bytes32, Bytes48, Error};
-#[cfg(feature = "risc0-ffi")]
+
+#[cfg(all(feature = "risc0-ffi", target_os = "zkvm"))]
 mod risc0_ffi {
     extern crate alloc;
 
