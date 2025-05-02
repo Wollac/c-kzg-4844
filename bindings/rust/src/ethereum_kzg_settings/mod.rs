@@ -3,7 +3,7 @@ use crate::KzgSettings;
 use once_cell::sync::Lazy;
 
 /// A lazily initialized global instance of Ethereum mainnet KZG settings.
-static ETHEREUM_KZG_SETTINGS: Lazy<&'static KzgSettings> = Lazy::new(|| load_kzg_settings());
+static ETHEREUM_KZG_SETTINGS: Lazy<&'static KzgSettings> = Lazy::new(load_kzg_settings);
 
 /// Returns default Ethereum mainnet KZG settings.
 #[inline]
