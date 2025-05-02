@@ -31,7 +31,7 @@ typedef struct {
      * The array contains `FIELD_ELEMENTS_PER_EXT_BLOB + 1` elements.
      * The array starts and ends with Fr::one().
      */
-    const fr_t *roots_of_unity;
+    fr_t *roots_of_unity;
     /**
      * Roots of unity for the subgroup of size `FIELD_ELEMENTS_PER_EXT_BLOB` in bit-reversed order.
      *
@@ -41,7 +41,7 @@ typedef struct {
      *
      * The array contains `FIELD_ELEMENTS_PER_EXT_BLOB` elements.
      */
-    const fr_t *brp_roots_of_unity;
+    fr_t *brp_roots_of_unity;
     /**
      * Roots of unity for the subgroup of size `FIELD_ELEMENTS_PER_EXT_BLOB` in reversed order.
      *
@@ -57,17 +57,17 @@ typedef struct {
      * G1 group elements from the trusted setup in monomial form.
      * The array contains `NUM_G1_POINTS = FIELD_ELEMENTS_PER_BLOB` elements.
      */
-    const g1_t *g1_values_monomial;
+    g1_t *g1_values_monomial;
     /**
      * G1 group elements from the trusted setup in Lagrange form and bit-reversed order.
      * The array contains `NUM_G1_POINTS = FIELD_ELEMENTS_PER_BLOB` elements.
      */
-    const g1_t *g1_values_lagrange_brp;
+    g1_t *g1_values_lagrange_brp;
     /**
      * G2 group elements from the trusted setup in monomial form.
      * The array contains `NUM_G2_POINTS` elements.
      */
-    const g2_t *g2_values_monomial;
+    g2_t *g2_values_monomial;
     /** Data used during FK20 proof generation. */
     g1_t **x_ext_fft_columns;
     /** The precomputed tables for fixed-base MSM. */

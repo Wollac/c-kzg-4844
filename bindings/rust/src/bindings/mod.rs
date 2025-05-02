@@ -184,16 +184,21 @@ impl KZGSettings {
     /// attempt to free memory it doesn't own)
     #[inline]
     pub(crate) fn from_raw(raw: &'static RawKzgSettings) -> Result<Self, bytemuck::PodCastError> {
-        let x_ext_fft_columns = raw.x_ext_fft_columns.as_ptr() as *const _;
+        let x_ext_fft_columns = raw.x_ext_fft_columns.as_ptr() as *mut _;
         Ok(Self {
-            roots_of_unity: try_cast_slice(&raw.roots_of_unity)?.as_ptr(),
-            brp_roots_of_unity: try_cast_slice(&raw.brp_roots_of_unity)?.as_ptr(),
-            reverse_roots_of_unity: try_cast_slice(&raw.reverse_roots_of_unity)?.as_ptr(),
-            g1_values_monomial: try_cast_slice(&raw.g1_values_monomial)?.as_ptr(),
-            g1_values_lagrange_brp: try_cast_slice(&raw.g1_values_lagrange_brp)?.as_ptr(),
-            g2_values_monomial: try_cast_slice(&raw.g2_values_monomial)?.as_ptr(),
+            roots_of_unity: try_cast_slice::<_, fr_t>(&raw.roots_of_unity)?.as_ptr() as *mut fr_t,
+            brp_roots_of_unity: try_cast_slice::<_, fr_t>(&raw.brp_roots_of_unity)?.as_ptr()
+                as *mut fr_t,
+            reverse_roots_of_unity: try_cast_slice::<_, fr_t>(&raw.reverse_roots_of_unity)?.as_ptr()
+                as *mut fr_t,
+            g1_values_monomial: try_cast_slice::<_, g1_t>(&raw.g1_values_monomial)?.as_ptr()
+                as *mut g1_t,
+            g1_values_lagrange_brp: try_cast_slice::<_, g1_t>(&raw.g1_values_lagrange_brp)?.as_ptr()
+                as *mut g1_t,
+            g2_values_monomial: try_cast_slice::<_, g2_t>(&raw.g2_values_monomial)?.as_ptr()
+                as *mut g2_t,
             x_ext_fft_columns,
-            tables: ptr::null(),
+            tables: ptr::null_mut(),
             wbits: raw.wbits,
             scratch_size: raw.scratch_size,
         })
