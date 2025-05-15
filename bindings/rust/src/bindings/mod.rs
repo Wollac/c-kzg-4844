@@ -49,15 +49,15 @@ unsafe impl Pod for blst_p2 {}
 const BYTES_PER_G1_POINT: usize = 48;
 const BYTES_PER_G2_POINT: usize = 96;
 
-/// Number of roots of unity required for the kzg trusted setup.
-pub const NUM_ROOTS_OF_UNITY: usize = NUM_G1_POINTS.next_power_of_two();
-
 /// Number of G1 points required for the kzg trusted setup.
 const NUM_G1_POINTS: usize = 4096;
 
 /// Number of G2 points required for the kzg trusted setup.
 /// 65 is fixed and is used for providing multiproofs up to 64 field elements.
 const NUM_G2_POINTS: usize = 65;
+
+/// Number of cells in a blob.
+const CELLS_PER_BLOB: usize = FIELD_ELEMENTS_PER_BLOB / FIELD_ELEMENTS_PER_CELL;
 
 /// A trusted (valid) KZG commitment.
 // NOTE: this is a type alias to the struct Bytes48, same as [`KZGProof`] in the C header files. To
@@ -115,9 +115,7 @@ pub(crate) struct RawKzgSettings {
     #[doc = " G2 group elements from the trusted setup in monomial form.\n The array contains `NUM_G2_POINTS` elements."]
     pub g2_values_monomial: [u8; NUM_G2_POINTS * size_of::<g2_t>()],
     #[doc = " Data used during FK20 proof generation."]
-    pub x_ext_fft_columns: [u8; CELLS_PER_EXT_BLOB * 128 * size_of::<g1_t>()],
-    #[doc = " The window size for the fixed-base MSM."]
-    pub wbits: usize,
+    pub x_ext_fft_columns: [u8; 2 * CELLS_PER_BLOB * FIELD_ELEMENTS_PER_CELL * size_of::<g1_t>()],
     #[doc = " The scratch size for the fixed-base MSM."]
     pub scratch_size: usize,
 }
@@ -177,15 +175,21 @@ impl KZGSettings {
     ///
     /// Creates a new `KZGSettings` instance that references data stored in the provided
     /// `RawKzgSettings`. The raw settings must have static lifetime.
-    ///
-    /// # Safety and Ownership
-    /// The returned instance contains pointers to the data in `raw`, not copies.
-    /// The caller must ensure that the destructor is not run (as it would
-    /// attempt to free memory it doesn't own)
     #[inline]
-    pub(crate) fn from_raw(raw: &'static RawKzgSettings) -> Result<Self, bytemuck::PodCastError> {
-        let x_ext_fft_columns = raw.x_ext_fft_columns.as_ptr() as *mut _;
-        Ok(Self {
+    pub(crate) fn from_raw(
+        raw: &'static RawKzgSettings,
+    ) -> Result<&'static Self, bytemuck::PodCastError> {
+        // allocate and leak memory for the table
+        let mut x_ext_fft_columns = Vec::with_capacity(2 * CELLS_PER_BLOB);
+        for column in raw
+            .x_ext_fft_columns
+            .chunks_exact(FIELD_ELEMENTS_PER_CELL * size_of::<g1_t>())
+        {
+            x_ext_fft_columns.push(try_cast_slice::<_, g1_t>(column)?.as_ptr())
+        }
+        let x_ext_fft_columns = Box::leak(x_ext_fft_columns.into_boxed_slice());
+
+        let settings = Self {
             roots_of_unity: try_cast_slice::<_, fr_t>(&raw.roots_of_unity)?.as_ptr() as *mut fr_t,
             brp_roots_of_unity: try_cast_slice::<_, fr_t>(&raw.brp_roots_of_unity)?.as_ptr()
                 as *mut fr_t,
@@ -197,16 +201,19 @@ impl KZGSettings {
                 as *mut g1_t,
             g2_values_monomial: try_cast_slice::<_, g2_t>(&raw.g2_values_monomial)?.as_ptr()
                 as *mut g2_t,
-            x_ext_fft_columns,
+            x_ext_fft_columns: x_ext_fft_columns.as_mut_ptr() as *mut *mut g1_t,
             tables: ptr::null_mut(),
-            wbits: raw.wbits,
+            wbits: 0,
             scratch_size: raw.scratch_size,
-        })
+        };
+
+        Ok(Box::leak(Box::new(settings)))
     }
 
     /// Converts the settings to a heap-allocated raw representation.
     pub(crate) fn to_raw(&self) -> Box<RawKzgSettings> {
-        println!("wut");
+        assert_eq!(self.wbits, 0);
+
         unsafe {
             let roots_of_unity: &[u8] = cast_slice(slice::from_raw_parts(
                 self.roots_of_unity,
@@ -232,10 +239,8 @@ impl KZGSettings {
                 self.g2_values_monomial,
                 NUM_G2_POINTS,
             ));
-            let x_ext_fft_columns: &[u8] = cast_slice(slice::from_raw_parts(
-                self.x_ext_fft_columns as *const g1_t,
-                CELLS_PER_EXT_BLOB * 128,
-            ));
+            let x_ext_fft_columns =
+                slice::from_raw_parts(self.x_ext_fft_columns, 2 * CELLS_PER_BLOB);
 
             // allocate uninitialized memory on the heap
             let mut result = Box::<RawKzgSettings>::new_uninit();
@@ -251,11 +256,23 @@ impl KZGSettings {
                 raw.g1_values_lagrange_brp
                     .copy_from_slice(g1_values_lagrange_brp);
                 raw.g2_values_monomial.copy_from_slice(g2_values_monomial);
-                raw.x_ext_fft_columns.copy_from_slice(x_ext_fft_columns);
-                raw.wbits = self.wbits;
+
+                for (i, raw_column) in raw
+                    .x_ext_fft_columns
+                    .chunks_exact_mut(FIELD_ELEMENTS_PER_CELL * size_of::<g1_t>())
+                    .enumerate()
+                {
+                    let x_ext_fft_column: &[u8] = cast_slice(slice::from_raw_parts(
+                        x_ext_fft_columns[i],
+                        FIELD_ELEMENTS_PER_CELL,
+                    ));
+                    raw_column.copy_from_slice(x_ext_fft_column);
+                }
+
                 raw.scratch_size = self.scratch_size;
             }
 
+            // SAFETY: all fields of the struct have been initialized
             result.assume_init()
         }
     }
@@ -1047,8 +1064,7 @@ mod tests {
     use super::*;
     use crate::KzgSettings;
     use rand::{rngs::ThreadRng, Rng};
-    use std::mem::ManuallyDrop;
-    use std::{fs, path::PathBuf};
+    use std::{fs, iter::zip, path::PathBuf};
     use test_formats::{
         blob_to_kzg_commitment_test, compute_blob_kzg_proof, compute_cells,
         compute_cells_and_kzg_proofs, compute_kzg_proof, recover_cells_and_kzg_proofs,
@@ -1065,8 +1081,6 @@ mod tests {
         // Leak and pin the serialized buffer to obtain a slice with static lifetime.
         let raw = Box::leak(raw);
         let settings = KzgSettings::from_raw(raw).unwrap();
-        // Wrap in ManuallyDrop so that the destructor is not run.
-        let settings = ManuallyDrop::new(settings);
 
         unsafe {
             assert_eq!(
@@ -1087,7 +1101,6 @@ mod tests {
                     FIELD_ELEMENTS_PER_EXT_BLOB + 1
                 )
             );
-
             assert_eq!(
                 slice::from_raw_parts(exp_settings.g1_values_monomial, NUM_G1_POINTS),
                 slice::from_raw_parts(settings.g1_values_monomial, NUM_G1_POINTS)
@@ -1096,18 +1109,28 @@ mod tests {
                 slice::from_raw_parts(exp_settings.g1_values_lagrange_brp, NUM_G1_POINTS),
                 slice::from_raw_parts(settings.g1_values_lagrange_brp, NUM_G1_POINTS)
             );
-
             assert_eq!(
                 slice::from_raw_parts(exp_settings.g2_values_monomial, NUM_G2_POINTS),
                 slice::from_raw_parts(settings.g2_values_monomial, NUM_G2_POINTS)
             );
-
-            assert_eq!(
-                slice::from_raw_parts(exp_settings.x_ext_fft_columns, CELLS_PER_EXT_BLOB),
-                slice::from_raw_parts(settings.x_ext_fft_columns, CELLS_PER_EXT_BLOB)
-            );
+            {
+                let exp_fft_columns =
+                    slice::from_raw_parts(exp_settings.x_ext_fft_columns, 2 * CELLS_PER_BLOB);
+                let fft_columns =
+                    slice::from_raw_parts(settings.x_ext_fft_columns, 2 * CELLS_PER_BLOB);
+                zip(exp_fft_columns, fft_columns).for_each(|(exp_column, column)| {
+                    assert_eq!(
+                        slice::from_raw_parts(*exp_column, FIELD_ELEMENTS_PER_CELL),
+                        slice::from_raw_parts(*column, FIELD_ELEMENTS_PER_CELL)
+                    )
+                });
+            }
+            assert_eq!(exp_settings.tables, settings.tables);
+            assert_eq!(exp_settings.wbits, settings.wbits);
+            assert_eq!(exp_settings.scratch_size, settings.scratch_size);
         }
     }
+
     fn generate_random_blob(rng: &mut ThreadRng) -> Blob {
         let mut arr = [0u8; BYTES_PER_BLOB];
         rng.fill(&mut arr[..]);

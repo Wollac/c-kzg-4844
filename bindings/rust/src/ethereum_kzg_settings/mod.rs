@@ -1,22 +1,12 @@
 use crate::KzgSettings;
-use alloc::sync::Arc;
 use once_cell::sync::Lazy;
 
 /// A lazily initialized global instance of Ethereum mainnet KZG settings.
-static ETHEREUM_KZG_SETTINGS: Lazy<Arc<KzgSettings>> = Lazy::new(|| Arc::new(load_kzg_settings()));
+static ETHEREUM_KZG_SETTINGS: Lazy<&'static KzgSettings> = Lazy::new(load_kzg_settings);
 
 /// Returns default Ethereum mainnet KZG settings.
-///
-/// If you need a cloneable settings use `ethereum_kzg_settings_arc` instead.
 pub fn ethereum_kzg_settings(_precompute: u64) -> &'static KzgSettings {
-    &ETHEREUM_KZG_SETTINGS
-}
-
-/// Returns default Ethereum mainnet KZG settings as an `Arc`.
-///
-/// It is useful for sharing the settings in multiple places.
-pub fn ethereum_kzg_settings_arc(_precompute: u64) -> Arc<KzgSettings> {
-    ETHEREUM_KZG_SETTINGS.clone()
+    *ETHEREUM_KZG_SETTINGS
 }
 
 #[cfg(feature = "generate_ethereum_kzg_settings")]
@@ -44,7 +34,7 @@ fn generate_kzg_settings() -> std::io::Result<&'static crate::bindings::RawKzgSe
     Ok(Box::leak(raw))
 }
 
-fn load_kzg_settings() -> KzgSettings {
+fn load_kzg_settings() -> &'static KzgSettings {
     #[cfg(feature = "generate_ethereum_kzg_settings")]
     return KzgSettings::from_raw(generate_kzg_settings().expect("failed to write KZG settings"))
         .unwrap();
@@ -59,7 +49,6 @@ fn load_kzg_settings() -> KzgSettings {
             g1_values_lagrange_brp: *include_bytes!("g1_values_lagrange_brp.bin"),
             g2_values_monomial: *include_bytes!("g2_values_monomial.bin"),
             x_ext_fft_columns: *include_bytes!("x_ext_fft_columns.bin"),
-            wbits: 0,
             scratch_size: 0,
         };
 
