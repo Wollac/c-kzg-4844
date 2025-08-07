@@ -21,17 +21,16 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use bytemuck::{cast_slice, try_cast_slice, Pod, Zeroable};
-#[cfg(not(target_os = "zkvm"))]
 use core::ffi::CStr;
 use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 use core::ptr;
 use core::slice;
-
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use alloc::ffi::CString;
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 // These types can be marked as Pod.
@@ -317,6 +316,16 @@ impl KZGSettings {
                 )))
             }
         }
+    }
+
+    #[cfg(target_os = "zkvm")]
+    pub fn load_trusted_setup_file(_: &Path, _: u64) -> Result<Self, Error> {
+        unimplemented!("Loading the trusted setup from  a file is not supported in the zkvm.");
+    }
+
+    #[cfg(target_os = "zkvm")]
+    pub fn load_trusted_setup_file_inner(_: &CStr, _: u64) -> Result<Self, Error> {
+        unimplemented!("Loading the trusted setup from  a file is not supported in the zkvm.");
     }
 
     /// Loads the trusted setup parameters from a file. The file format is as follows:
