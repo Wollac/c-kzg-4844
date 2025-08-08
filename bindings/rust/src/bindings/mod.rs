@@ -27,10 +27,10 @@ use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 use core::ptr;
 use core::slice;
+
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use alloc::ffi::CString;
-#[cfg(all(feature = "std", not(target_os = "zkvm")))]
-use std::os::unix::ffi::OsStrExt;
+#[cfg(feature = "std")]
 use std::path::Path;
 
 // These types can be marked as Pod.
@@ -318,7 +318,7 @@ impl KZGSettings {
         }
     }
 
-    #[cfg(target_os = "zkvm")]
+    #[cfg(all(feature = "std", target_os = "zkvm"))]
     pub fn load_trusted_setup_file(_: &Path, _: u64) -> Result<Self, Error> {
         unimplemented!("Loading the trusted setup from  a file is not supported in the zkvm.");
     }
@@ -427,7 +427,7 @@ impl KZGSettings {
     /// FIELD_ELEMENT_PER_BLOB g1 byte values in Lagrange form
     /// 65 g2 byte values in monomial form
     /// FIELD_ELEMENT_PER_BLOB g1 byte values in monomial form
-    #[cfg(all(not(feature = "std"), not(target_os = "zkvm")))]
+    #[cfg(not(feature = "std"))]
     pub fn load_trusted_setup_file(file_path: &CStr, precompute: u64) -> Result<Self, Error> {
         Self::load_trusted_setup_file_inner(file_path, precompute)
     }
