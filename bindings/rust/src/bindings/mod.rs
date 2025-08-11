@@ -21,7 +21,6 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use bytemuck::{cast_slice, try_cast_slice, Pod, Zeroable};
-#[cfg(not(target_os = "zkvm"))]
 use core::ffi::CStr;
 use core::fmt;
 use core::mem::MaybeUninit;
@@ -31,7 +30,7 @@ use core::slice;
 
 #[cfg(all(feature = "std", not(target_os = "zkvm")))]
 use alloc::ffi::CString;
-#[cfg(all(feature = "std", not(target_os = "zkvm")))]
+#[cfg(feature = "std")]
 use std::path::Path;
 
 // These types can be marked as Pod.
@@ -319,6 +318,16 @@ impl KZGSettings {
         }
     }
 
+    #[cfg(all(feature = "std", target_os = "zkvm"))]
+    pub fn load_trusted_setup_file(_: &Path, _: u64) -> Result<Self, Error> {
+        unimplemented!("Loading the trusted setup from  a file is not supported in the zkvm.");
+    }
+
+    #[cfg(target_os = "zkvm")]
+    pub fn load_trusted_setup_file_inner(_: &CStr, _: u64) -> Result<Self, Error> {
+        unimplemented!("Loading the trusted setup from  a file is not supported in the zkvm.");
+    }
+
     /// Loads the trusted setup parameters from a file. The file format is as follows:
     ///
     /// FIELD_ELEMENTS_PER_BLOB
@@ -418,7 +427,7 @@ impl KZGSettings {
     /// FIELD_ELEMENT_PER_BLOB g1 byte values in Lagrange form
     /// 65 g2 byte values in monomial form
     /// FIELD_ELEMENT_PER_BLOB g1 byte values in monomial form
-    #[cfg(all(not(feature = "std"), not(target_os = "zkvm")))]
+    #[cfg(not(feature = "std"))]
     pub fn load_trusted_setup_file(file_path: &CStr, precompute: u64) -> Result<Self, Error> {
         Self::load_trusted_setup_file_inner(file_path, precompute)
     }
