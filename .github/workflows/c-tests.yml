@@ -23,7 +23,7 @@ jobs:
           - windows-latest
     steps:
       # Checkout repository and blst submodule.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           submodules: recursive
 
@@ -31,9 +31,9 @@ jobs:
       # Only need to check this once.
       - name: Run clang-format
         if: matrix.os == 'ubuntu-latest'
-        uses: jidicula/clang-format-action@v4.13.0
+        uses: jidicula/clang-format-action@4726374d1aa3c6aecf132e5197e498979588ebc8 # v4.15.0
         with:
-          clang-format-version: '18'
+          clang-format-version: '20'
           check-path: 'src'
           exclude-regex: 'tinytest.h'
 
@@ -66,7 +66,7 @@ jobs:
       # Doesn't work on Windows.
       - name: Install LLVM
         if: matrix.os == 'ubuntu-latest'
-        uses: egor-tensin/setup-clang@v1
+        uses: egor-tensin/setup-clang@ef434b41eb33a70396fb336b1bae39c76d740c3d # v1.4
 
       # Generate the coverage report.
       # Doesn't work on Windows.
@@ -78,7 +78,7 @@ jobs:
       # Didn't generate it for Windows.
       - name: Save coverage report
         if: matrix.os != 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ matrix.os }}
           path: src/coverage.html

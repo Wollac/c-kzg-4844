@@ -7,9 +7,9 @@ pub const BYTES_PER_COMMITMENT: usize = 48;
 pub const BYTES_PER_PROOF: usize = 48;
 pub const FIELD_ELEMENTS_PER_BLOB: usize = 4096;
 pub const BYTES_PER_BLOB: usize = 131072;
+pub const FIELD_ELEMENTS_PER_EXT_BLOB: usize = 8192;
 pub const FIELD_ELEMENTS_PER_CELL: usize = 64;
 pub const BYTES_PER_CELL: usize = 2048;
-pub const FIELD_ELEMENTS_PER_EXT_BLOB: usize = 8192;
 pub const CELLS_PER_EXT_BLOB: usize = 128;
 pub type limb_t = u64;
 #[repr(C)]
@@ -154,6 +154,11 @@ unsafe extern "C" {
         n: u64,
         s: *const KZGSettings,
     ) -> C_KZG_RET;
+    pub fn compute_challenge(
+        eval_challenge_out: *mut fr_t,
+        blob: *const Blob,
+        commitment: *const g1_t,
+    );
     pub fn compute_cells_and_kzg_proofs(
         cells: *mut Cell,
         proofs: *mut KZGProof,
@@ -176,6 +181,16 @@ unsafe extern "C" {
         proofs_bytes: *const Bytes48,
         num_cells: u64,
         s: *const KZGSettings,
+    ) -> C_KZG_RET;
+    pub fn compute_verify_cell_kzg_proof_batch_challenge(
+        challenge_out: *mut fr_t,
+        commitments_bytes: *const Bytes48,
+        num_commitments: u64,
+        commitment_indices: *const u64,
+        cell_indices: *const u64,
+        cells: *const Cell,
+        proofs_bytes: *const Bytes48,
+        num_cells: u64,
     ) -> C_KZG_RET;
     pub fn load_trusted_setup(
         out: *mut KZGSettings,

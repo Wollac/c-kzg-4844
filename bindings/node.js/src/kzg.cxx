@@ -121,7 +121,9 @@ KZGSettings *get_kzg_settings(Napi::Env &env, const Napi::CallbackInfo &info) {
  * @return - native pointer to first byte in ArrayBuffer
  */
 inline uint8_t *get_bytes(
-    const Napi::Env &env, const Napi::Value &val, size_t length,
+    const Napi::Env &env,
+    const Napi::Value &val,
+    size_t length,
     std::string_view name
 ) {
     if (!val.IsTypedArray() ||
@@ -759,7 +761,7 @@ Napi::Value RecoverCellsAndKzgProofs(const Napi::CallbackInfo &info) {
         goto out;
     }
     recovered_proofs = (KZGProof *)calloc(CELLS_PER_EXT_BLOB, BYTES_PER_PROOF);
-    if (recovered_cells == nullptr) {
+    if (recovered_proofs == nullptr) {
         Napi::Error::New(
             env, "Error while allocating memory for recovered proofs"
         )
@@ -822,6 +824,7 @@ Napi::Value RecoverCellsAndKzgProofs(const Napi::CallbackInfo &info) {
     result = tuple;
 
 out:
+    free(cell_indices);
     free(cells);
     free(recovered_cells);
     free(recovered_proofs);
