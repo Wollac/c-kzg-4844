@@ -50,6 +50,15 @@ fn main() {
 
     // Finally, tell cargo this provides ckzg/ckzg_min
     println!("cargo:rustc-link-lib=ckzg");
+
+    // Explicitly link against `blst`.
+    // The C code that we compile contains unresolved symbols from the blst library. By default,
+    // Cargo will link blst as a dependency of our Rust crate, but it may discard it (e.g. due to
+    // the `-Wl,--as-needed` linker flag) because the Rust code itself doesn't use any `blst`
+    // symbols directly.
+    // This line ensures that `libblst` is always included in the final link command, which
+    // correctly resolves the symbols needed by `libckzg`.
+    println!("cargo:rustc-link-lib=blst");
 }
 
 #[cfg(feature = "generate-bindings")]
